@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"sync"
 
-	"gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v2"
 
 	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,41 +28,29 @@ const namespace = "azure_sql"
 
 // Exporter implements prometheus.Collector.
 type Exporter struct {
-	dbs            []Database
-	mutex          sync.RWMutex
-	up             prometheus.Gauge
-	cpuPercent     *prometheus.GaugeVec
-	dataIO         *prometheus.GaugeVec
-	logIO          *prometheus.GaugeVec
-	memoryPercent  *prometheus.GaugeVec
-	workPercent    *prometheus.GaugeVec
-	sessionPercent *prometheus.GaugeVec
-	dbUp           *prometheus.GaugeVec
+	dbs         []Database
+	mutex       sync.RWMutex
+	up          prometheus.Gauge
+	uerecalcAge *prometheus.GaugeVec
+	ncrecalcAge *prometheus.GaugeVec
+	dbUp        *prometheus.GaugeVec
 }
 
 // NewExporter returns an initialized MS SQL Exporter.
 func NewExporter(dbs []Database) *Exporter {
 	return &Exporter{
-		dbs:            dbs,
-		up:             newGuage("up", "Was the last scrape of Azure SQL successful."),
-		cpuPercent:     newGuageVec("cpu_percent", "Average compute utilization in percentage of the limit of the service tier."),
-		dataIO:         newGuageVec("data_io", "Average I/O utilization in percentage based on the limit of the service tier."),
-		logIO:          newGuageVec("log_io", "Average write resource utilization in percentage of the limit of the service tier."),
-		memoryPercent:  newGuageVec("memory_percent", "Average Memory Usage In Percent"),
-		workPercent:    newGuageVec("worker_percent", "Maximum concurrent workers (requests) in percentage based on the limit of the database’s service tier."),
-		sessionPercent: newGuageVec("session_percent", "Maximum concurrent sessions in percentage based on the limit of the database’s service tier."),
-		dbUp:           newGuageVec("db_up", "Is the database is accessible."),
+		dbs:         dbs,
+		up:          newGuage("up", "Was the last scrape of Azure SQL successful."),
+		uerecalcAge: newGuageVec("ue_recalc_age", "Number of hours since the last sas recalc restore has been created"),
+		ncrecalcAge: newGuageVec("nc_recalc_age", "Number of hours since the last sas recalc restore has been created"),
+		dbUp:        newGuageVec("db_up", "Is the database is accessible."),
 	}
 }
 
 // Describe describes all the metrics exported by the MS SQL exporter.
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
-	e.cpuPercent.Describe(ch)
-	e.dataIO.Describe(ch)
-	e.logIO.Describe(ch)
-	e.memoryPercent.Describe(ch)
-	e.workPercent.Describe(ch)
-	e.sessionPercent.Describe(ch)
+	e.uerecalcAge.Describe(ch)
+	e.ncrecalcAge.Describe(ch)
 	e.dbUp.Describe(ch)
 	e.up.Describe(ch)
 }
@@ -75,12 +63,8 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.cpuPercent.Collect(ch)
-	e.dataIO.Collect(ch)
-	e.logIO.Collect(ch)
-	e.memoryPercent.Collect(ch)
-	e.workPercent.Collect(ch)
-	e.sessionPercent.Collect(ch)
+	e.uerecalcAge.Collect(ch)
+	e.ncrecalcAge.Collect(ch)
 	e.dbUp.Collect(ch)
 	e.up.Set(1)
 }
@@ -95,9 +79,9 @@ func (e *Exporter) scrapeDatabase(d Database) {
 		return
 	}
 	defer conn.Close()
-	query := "SELECT TOP 1 avg_cpu_percent, avg_data_io_percent, avg_log_write_percent, avg_memory_usage_percent, max_session_percent, max_worker_percent FROM sys.dm_db_resource_stats ORDER BY end_time DESC"
-	var cpu, data, logio, memory, session, worker float64
-	err = conn.QueryRow(query).Scan(&cpu, &data, &logio, &memory, &session, &worker)
+	query := "SELECT TOP 1 (SELECT DATEDIFF(HOUR, create_date, GETDATE()) FROM sys.databases WHERE name = 'DBname'), (SELECT DATEDIFF(HOUR, create_date, GETDATE()) FROM sys.databases WHERE name = 'DBName')"
+	var uerecalcage, ncrecalcage float64
+	err = conn.QueryRow(query).Scan(&uerecalcage, &ncrecalcage)
 	if err != nil {
 		e.mutex.Lock()
 		defer e.mutex.Unlock()
@@ -107,12 +91,8 @@ func (e *Exporter) scrapeDatabase(d Database) {
 	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.cpuPercent.WithLabelValues(d.Server, d.Name).Set(cpu)
-	e.dataIO.WithLabelValues(d.Server, d.Name).Set(data)
-	e.logIO.WithLabelValues(d.Server, d.Name).Set(logio)
-	e.memoryPercent.WithLabelValues(d.Server, d.Name).Set(memory)
-	e.workPercent.WithLabelValues(d.Server, d.Name).Set(worker)
-	e.sessionPercent.WithLabelValues(d.Server, d.Name).Set(session)
+	e.uerecalcAge.WithLabelValues(d.Server, d.Name).Set(uerecalcage)
+	e.ncrecalcAge.WithLabelValues(d.Server, d.Name).Set(ncrecalcage)
 	e.dbUp.WithLabelValues(d.Server, d.Name).Set(1)
 }
 
